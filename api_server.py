@@ -6,7 +6,6 @@ import numpy as np
 import requests
 import json
 import logging
-import os
 
 app = Flask(__name__)
 CORS(app)
@@ -57,93 +56,210 @@ def health_check():
         'thingspeak_channel': THINGSPEAK_CHANNEL_ID
     })
 
-# ✅ Static test route (for testing with frontend)
-@app.route('/api/current-data', methods=['GET'])
-def get_static_current_data():
-    """Static Example Sensor Data for Testing"""
-    sensor_data = {
-        "pH": 4.2,
-        "turbidity": 850,
-        "orp": -120,
-        "alert_code": 1
-    }
-    return jsonify(sensor_data)
+@app.route('/api/current-data')
+def get_current_data():
+    """Fetch latest data from ThingSpeak"""
+    try:
+        url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds/last.json?api_key={THINGSPEAK_READ_API_KEY}"
+        logger.info(f"Fetching data from: {url}")
+        
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Handle potential None values from ThingSpeak
+        ph_value = float(data.get('field1', 0)) if data.get('field1') else 6.5
+        turbidity_value = float(data.get('field2', 0)) if data.get('field2') else 500
+        orp_value = float(data.get('field3', 0)) if data.get('field3') else -100
+        alert_code = int(data.get('field4', 0)) if data.get('field4') else 0
+        
+        result = {
+            'pH': ph_value,
+            'turbidity': turbidity_value,
+            'orp': orp_value,
+            'alert_code': alert_code,
+            'timestamp': data.get('created_at', ''),
+            'status': 'success'
+        }
+        
+        logger.info(f"Successfully fetched data: {result}")
+        return jsonify(result)
+        
+    except requests.RequestException as e:
+        logger.error(f"ThingSpeak API error: {e}")
+        return jsonify({
+            'error': 'Failed to fetch data from ThingSpeak',
+            'details': str(e),
+            'fallback_data': {
+                'pH': 6.5,
+                'turbidity': 500,
+                'orp': -100,
+                'alert_code': 0
+            }
+        }), 500
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return jsonify({'error': str(e)}), 500
 
-# ✅ AI Prediction Route (Retained as-is)
 @app.route('/api/ai-predictions', methods=['POST'])
 def get_ai_predictions():
     """Get AI predictions for current sensor data"""
     try:
-        data = request.get_json()
-        pH = data.get('pH')
-        turbidity = data.get('turbidity')
-        orp = data.get('orp')
-
-        # Validate input
-        if pH is None or turbidity is None or orp is None:
-            return jsonify({'error': 'Missing sensor data'}), 400
-
-        # Prepare input for models
-        sensor_input = pd.DataFrame([[pH, turbidity, orp]], columns=['pH', 'turbidity', 'orp'])
-        logger.info(f"Received sensor data for prediction: {sensor_input.to_dict()}")
-
-        # Predictive Maintenance Prediction
-        pm_prediction = pm_model.predict(sensor_input)[0] if models_loaded['pm_model'] else None
-
-        # Classification Prediction
-        class_prediction = class_model.predict(sensor_input)[0] if models_loaded['class_model'] else None
-
-        # Anomaly Detection Prediction
-        anomaly_prediction = anomaly_model.predict(sensor_input)[0] if models_loaded['anomaly_model'] else None
-
-        logger.info(f"Predictions - PM: {pm_prediction}, Class: {class_prediction}, Anomaly: {anomaly_prediction}")
-
-        return jsonify({
-            'pm_prediction': int(pm_prediction) if pm_prediction is not None else None,
-            'class_prediction': int(class_prediction) if class_prediction is not None else None,
-            'anomaly_prediction': int(anomaly_prediction) if anomaly_prediction is not None else None
-        })
-
+        data = request.json
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        pH = float(data.get('pH', 6.5))
+        turbidity = float(data.get('turbidity', 500))
+        orp = float(data.get('orp', -100))
+        
+        logger.info(f"Received data for prediction: pH={pH}, turbidity={turbidity}, orp={orp}")
+        
+        predictions = {}
+        
+        # 1. Predictive Maintenance
+        try:
+            if models_loaded['pm_model']:
+                # Prepare input data for PM model
+                pm_input = pd.DataFrame({
+                    'pH': [pH],
+                    'turbidity': [turbidity],
+                    'orp': [orp],
+                    'pH_rolling_avg': [pH]  # Use current pH as rolling average
+                })
+                
+                # Make prediction
+                pm_pred = pm_model.predict(pm_input)[0]
+                maintenance_days = max(1, int(pm_pred))
+                confidence = min(95, max(70, int(85 + (pH - 4) * 5)))
+                
+                predictions['maintenance'] = {
+                    'days_until_replacement': maintenance_days,
+                    'confidence': confidence
+                }
+            else:
+                # Fallback calculation
+                maintenance_days = max(1, int(7 - (7 - pH) * 2))
+                predictions['maintenance'] = {
+                    'days_until_replacement': maintenance_days,
+                    'confidence': 75
+                }
+        except Exception as e:
+            logger.error(f"PM model error: {e}")
+            predictions['maintenance'] = {
+                'days_until_replacement': 5,
+                'confidence': 50,
+                'error': 'Model unavailable'
+            }
+        
+        # 2. Water Quality Classification
+        try:
+            if models_loaded['class_model']:
+                # Prepare input data for classification model
+                class_input = pd.DataFrame({
+                    'pH': [pH], 
+                    'turbidity': [turbidity]
+                })
+                
+                quality_pred = class_model.predict(class_input)[0]
+                quality_labels = ['Safe', 'Warning', 'Dangerous']
+                
+                predictions['quality'] = {
+                    'status': quality_labels[min(len(quality_labels)-1, max(0, quality_pred))],
+                    'confidence': 0.9
+                }
+            else:
+                # Fallback classification logic
+                if pH < 4.0 or turbidity > 1500:
+                    status = 'Dangerous'
+                elif pH < 5.0 or turbidity > 1000:
+                    status = 'Warning'
+                else:
+                    status = 'Safe'
+                
+                predictions['quality'] = {
+                    'status': status,
+                    'confidence': 0.7
+                }
+        except Exception as e:
+            logger.error(f"Classification model error: {e}")
+            predictions['quality'] = {
+                'status': 'Unknown',
+                'confidence': 0.5,
+                'error': 'Model unavailable'
+            }
+        
+        # 3. Anomaly Detection
+        try:
+            if models_loaded['anomaly_model']:
+                # Prepare input data for anomaly detection
+                anomaly_input = pd.DataFrame({
+                    'pH': [pH], 
+                    'turbidity': [turbidity]
+                })
+                
+                anomaly_pred = anomaly_model.predict(anomaly_input)[0]
+                is_anomaly = anomaly_pred == -1
+                
+                predictions['anomaly'] = {
+                    'is_anomaly': is_anomaly,
+                    'status': 'Anomaly Detected' if is_anomaly else 'Normal Operation'
+                }
+            else:
+                # Fallback anomaly detection
+                is_anomaly = pH < 3.0 or pH > 9.0 or turbidity > 2000
+                predictions['anomaly'] = {
+                    'is_anomaly': is_anomaly,
+                    'status': 'Anomaly Detected' if is_anomaly else 'Normal Operation'
+                }
+        except Exception as e:
+            logger.error(f"Anomaly model error: {e}")
+            predictions['anomaly'] = {
+                'is_anomaly': False,
+                'status': 'Detection unavailable',
+                'error': 'Model unavailable'
+            }
+        
+        logger.info(f"Generated predictions: {predictions}")
+        return jsonify(predictions)
+        
     except Exception as e:
-        logger.error(f"❌ Error during prediction: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Prediction error: {e}")
+        return jsonify({
+            'error': 'Failed to generate predictions',
+            'details': str(e),
+            'fallback_predictions': {
+                'maintenance': {'days_until_replacement': 5, 'confidence': 50},
+                'quality': {'status': 'Unknown', 'confidence': 0.5},
+                'anomaly': {'is_anomaly': False, 'status': 'Detection unavailable'}
+            }
+        }), 500
 
-# ✅ Historical Data Route (Retained as-is)
 @app.route('/api/historical-data')
 def get_historical_data():
     """Get historical data from ThingSpeak"""
     try:
-        url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
-        params = {
-            'api_key': THINGSPEAK_READ_API_KEY,
-            'results': 100
-        }
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            feeds = data.get('feeds', [])
-
-            # Extract fields and format data
-            historical_data = []
-            for entry in feeds:
-                historical_data.append({
-                    'timestamp': entry.get('created_at'),
-                    'pH': entry.get('field1'),
-                    'turbidity': entry.get('field2'),
-                    'orp': entry.get('field3'),
-                })
-
-            logger.info(f"Fetched {len(historical_data)} records from ThingSpeak")
-            return jsonify(historical_data)
-        else:
-            logger.error(f"ThingSpeak API Error: {response.status_code}")
-            return jsonify({'error': 'Failed to fetch data from ThingSpeak'}), 500
-
+        url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={THINGSPEAK_READ_API_KEY}&results=100"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        processed_data = []
+        for feed in data.get('feeds', []):
+            processed_data.append({
+                'timestamp': feed.get('created_at', ''),
+                'pH': float(feed.get('field1', 0)) if feed.get('field1') else None,
+                'turbidity': float(feed.get('field2', 0)) if feed.get('field2') else None,
+                'orp': float(feed.get('field3', 0)) if feed.get('field3') else None,
+                'alert_code': int(feed.get('field4', 0)) if feed.get('field4') else 0
+            })
+        
+        return jsonify(processed_data)
+        
     except Exception as e:
-        logger.error(f"❌ Error fetching historical data: {e}")
+        logger.error(f"Historical data error: {e}")
         return jsonify({'error': str(e)}), 500
 
-# ✅ Models Status Route
 @app.route('/api/models-status')
 def get_models_status():
     """Get status of loaded AI models"""
@@ -153,7 +269,5 @@ def get_models_status():
         'loaded_count': sum(models_loaded.values())
     })
 
-# ✅ App Runner (Render/Local Friendly)
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(debug=True, host='0.0.0.0', port=port)
+    app.run(debug=True, port=5000)

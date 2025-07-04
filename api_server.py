@@ -101,7 +101,7 @@ def get_current_data():
         logger.error(f"Unexpected error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/ai-predictions', methods=['POST'])
+@app.route('/api/ai-predictions', methods=['POST','GET'])
 def get_ai_predictions():
     """Get AI predictions for current sensor data"""
     try:
@@ -120,15 +120,13 @@ def get_ai_predictions():
         # 1. Predictive Maintenance
         try:
             if models_loaded['pm_model']:
-                # Prepare input data for PM model
                 pm_input = pd.DataFrame({
                     'pH': [pH],
                     'turbidity': [turbidity],
                     'orp': [orp],
-                    'pH_rolling_avg': [pH]  # Use current pH as rolling average
+                    'pH_rolling_avg': [pH]
                 })
                 
-                # Make prediction
                 pm_pred = pm_model.predict(pm_input)[0]
                 maintenance_days = max(1, int(pm_pred))
                 confidence = min(95, max(70, int(85 + (pH - 4) * 5)))
@@ -138,7 +136,6 @@ def get_ai_predictions():
                     'confidence': confidence
                 }
             else:
-                # Fallback calculation
                 maintenance_days = max(1, int(7 - (7 - pH) * 2))
                 predictions['maintenance'] = {
                     'days_until_replacement': maintenance_days,
@@ -155,7 +152,6 @@ def get_ai_predictions():
         # 2. Water Quality Classification
         try:
             if models_loaded['class_model']:
-                # Prepare input data for classification model
                 class_input = pd.DataFrame({
                     'pH': [pH], 
                     'turbidity': [turbidity]
@@ -169,7 +165,6 @@ def get_ai_predictions():
                     'confidence': 0.9
                 }
             else:
-                # Fallback classification logic
                 if pH < 4.0 or turbidity > 1500:
                     status = 'Dangerous'
                 elif pH < 5.0 or turbidity > 1000:
@@ -192,21 +187,19 @@ def get_ai_predictions():
         # 3. Anomaly Detection
         try:
             if models_loaded['anomaly_model']:
-                # Prepare input data for anomaly detection
                 anomaly_input = pd.DataFrame({
                     'pH': [pH], 
                     'turbidity': [turbidity]
                 })
                 
                 anomaly_pred = anomaly_model.predict(anomaly_input)[0]
-                is_anomaly = anomaly_pred == -1
+                is_anomaly = bool(anomaly_pred == -1)  # ✅ FIX: Convert np.bool_ to bool
                 
                 predictions['anomaly'] = {
                     'is_anomaly': is_anomaly,
                     'status': 'Anomaly Detected' if is_anomaly else 'Normal Operation'
                 }
             else:
-                # Fallback anomaly detection
                 is_anomaly = pH < 3.0 or pH > 9.0 or turbidity > 2000
                 predictions['anomaly'] = {
                     'is_anomaly': is_anomaly,

@@ -40,9 +40,9 @@ def train_and_save_models():
     
     # 4. Train models
     models = {
-        "model_pm.pkl": RandomForestRegressor().fit(X_pm, y_pm),
-        "model_class.pkl": RandomForestClassifier().fit(X_pm, y_class),
-        "model_anomaly.pkl": IsolationForest(contamination=0.05).fit(X_pm)
+        "model_pm1.pkl": RandomForestRegressor().fit(X_pm, y_pm),
+        "model_class1.pkl": RandomForestClassifier().fit(X_pm, y_class),
+        "model_anomaly1.pkl": IsolationForest(contamination=0.05).fit(X_pm)
     }
     
     # 5. Save models
@@ -50,20 +50,7 @@ def train_and_save_models():
         joblib.dump(model, filename)
         print(f"Created new model: {filename}")
     
-    # 6. Optional MATLAB (.mat) file creation
-    try:
-        import scipy.io
-        for name, model in models.items():
-            model_params = model.get_params()
-            scipy.io.savemat(
-                f"{Path(name).stem}.mat",
-                {Path(name).stem: model_params}
-            )
-        print("Successfully created MATLAB (.mat) files")
-    except ImportError:
-        print("scipy not available - skipping .mat creation")
-    except Exception as e:
-        print(f"Error creating MATLAB files: {e}")
+
 
 if __name__ == "__main__":
     cleanup_old_models()
